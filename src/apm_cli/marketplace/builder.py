@@ -84,6 +84,7 @@ class ResolvedPackage:
     requested_version: str | None  # original APM-only range (for diagnostics)
     tags: tuple[str, ...]
     is_prerelease: bool  # True if the resolved ref was a prerelease semver
+    host: str | None = None  # non-default git host parsed from apm.yml source
 
 
 @dataclass(frozen=True)
@@ -227,6 +228,9 @@ class MarketplaceBuilder:
         self._host: str = default_host() or "github.com"
         self._host_info: HostInfo | None = None
         self._auth_resolved: bool = False
+        # Per-host RefResolver cache for entries that override the host via
+        # the ``host.tld/owner/repo`` source form in apm.yml.
+        self._host_resolvers: dict[str, RefResolver] = {}
 
     @classmethod
     def from_config(
@@ -280,6 +284,31 @@ class MarketplaceBuilder:
             )
         return self._resolver
 
+    def _get_resolver_for_host(self, host: str | None) -> RefResolver:
+        """Return a RefResolver bound to *host* (default when ``None``).
+
+        Per-host resolvers are cached for the lifetime of the build so each
+        unique host pays the auth-resolution cost only once.
+        """
+        if host is None or host == self._host:
+            return self._get_resolver()
+        cached = self._host_resolvers.get(host)
+        if cached is not None:
+            return cached
+        self._ensure_auth()
+        # Reuse the resolved token only when the override host matches the
+        # default host class; otherwise leave token unset and rely on
+        # ambient git credentials (SSH key / git credential helper).
+        token = self._github_token if host == self._host else None
+        resolver = RefResolver(
+            timeout_seconds=self._options.timeout_seconds,
+            offline=self._options.offline,
+            host=host,
+            token=token,
+        )
+        self._host_resolvers[host] = resolver
+        return resolver
+
     def _ensure_auth(self) -> None:
         """Lazily resolve host classification and GitHub token.
 
@@ -325,7 +354,7 @@ class MarketplaceBuilder:
                 is_prerelease=False,
             )
         yml = self._load_yml()
-        resolver = self._get_resolver()
+        resolver = self._get_resolver_for_host(entry.host)
         owner_repo = entry.source
 
         if entry.ref is not None:
@@ -355,6 +384,7 @@ class MarketplaceBuilder:
                 requested_version=entry.version,
                 tags=entry.tags,
                 is_prerelease=sv.is_prerelease if sv else False,
+                host=entry.host,
             )
 
         refs = resolver.list_remote_refs(owner_repo)
@@ -375,6 +405,7 @@ class MarketplaceBuilder:
                     requested_version=entry.version,
                     tags=entry.tags,
                     is_prerelease=sv.is_prerelease if sv else False,
+                    host=entry.host,
                 )
 
         # Try as full refname
@@ -394,6 +425,7 @@ class MarketplaceBuilder:
                     requested_version=entry.version,
                     tags=entry.tags,
                     is_prerelease=sv.is_prerelease if sv else False,
+                    host=entry.host,
                 )
 
         # Try as branch name
@@ -410,6 +442,7 @@ class MarketplaceBuilder:
                     requested_version=entry.version,
                     tags=entry.tags,
                     is_prerelease=False,
+                    host=entry.host,
                 )
 
         # HEAD special case
@@ -479,6 +512,7 @@ class MarketplaceBuilder:
             requested_version=version_range,
             tags=entry.tags,
             is_prerelease=best_sv.is_prerelease,
+            host=entry.host,
         )
 
     # -- concurrent resolution ----------------------------------------------
@@ -508,6 +542,12 @@ class MarketplaceBuilder:
         # spawning workers -- avoids a race on _ensure_auth() and
         # matches the pattern used in _prefetch_metadata().
         self._get_resolver()
+        # Pre-warm any per-host resolvers needed by entries that override the
+        # default host via the ``host.tld/owner/repo`` source form.  Done on
+        # the main thread so workers never race to create the same resolver.
+        for entry in entries:
+            if entry.host:
+                self._get_resolver_for_host(entry.host)
 
         with ThreadPoolExecutor(max_workers=min(self._options.concurrency, len(entries))) as pool:
             future_to_index = {
@@ -858,11 +898,24 @@ class MarketplaceBuilder:
                 # Subdirs use the ``git-subdir`` form; everything else uses
                 # ``github`` shorthand. Field names: ``source``/``repo``/``sha``
                 # (NOT ``type``/``repository``/``commit``).
+                #
+                # When the package was authored with a host-prefixed source
+                # (``host.tld/owner/repo``), emit a real ``https://`` URL so
+                # Claude Code can clone from a non-default host (e.g. GHE).
                 source_obj: dict[str, Any] = OrderedDict()
                 if pkg.subdir:
                     source_obj["source"] = "git-subdir"
-                    source_obj["url"] = pkg.source_repo
+                    if pkg.host:
+                        source_obj["url"] = f"https://{pkg.host}/{pkg.source_repo}"
+                    else:
+                        source_obj["url"] = pkg.source_repo
                     source_obj["path"] = pkg.subdir
+                elif pkg.host:
+                    # Non-default host without subdir: ``github`` shorthand
+                    # only resolves to github.com, so emit a ``url`` source
+                    # with a full clone URL instead.
+                    source_obj["source"] = "url"
+                    source_obj["url"] = f"https://{pkg.host}/{pkg.source_repo}"
                 else:
                     source_obj["source"] = "github"
                     source_obj["repo"] = pkg.source_repo
