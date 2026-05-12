@@ -65,11 +65,27 @@ _SEMVER_RE = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
-# Source field accepts either ``owner/repo`` (remote) or ``./...`` (local
-# path within the same repo).  Used by both yml_schema and yml_editor for
-# source field validation.
-SOURCE_RE = re.compile(r"^(?:[^/]+/[^/]+|\./.*)$")
+# Source field accepts:
+#   - ``owner/repo`` (remote, default host)
+#   - ``host.tld/owner/repo`` (remote on a non-default host -- the first
+#     segment must look like a hostname, i.e. contain a dot)
+#   - ``./...`` (local path within the same repo)
+# Used by both yml_schema and yml_editor for source field validation.
+SOURCE_RE = re.compile(r"^(?:[^/\s]+\.[^/\s]+/[^/\s]+/[^/\s]+|[^/\s]+/[^/\s]+|\./.*)$")
 LOCAL_SOURCE_RE = re.compile(r"^\./")
+# Matches ``host.tld/owner/repo`` (3 segments, first is FQDN-ish).
+_HOST_PREFIXED_SOURCE_RE = re.compile(r"^([^/\s]+\.[^/\s]+)/([^/\s]+/[^/\s]+)$")
+
+
+def split_host_from_source(source: str) -> tuple[str | None, str]:
+    """Split ``host.tld/owner/repo`` into ``(host, owner/repo)``.
+
+    Returns ``(None, source)`` for ``owner/repo`` or local ``./...`` forms.
+    """
+    m = _HOST_PREFIXED_SOURCE_RE.match(source)
+    if m:
+        return m.group(1), m.group(2)
+    return None, source
 
 # Placeholder tokens accepted in ``tag_pattern`` / ``build.tagPattern``.
 _TAG_PLACEHOLDERS = ("{version}", "{name}")
@@ -224,6 +240,10 @@ class PackageEntry:
     repository: str | None = None
     # Derived (set by loader, not by user)
     is_local: bool = False
+    # Optional non-default git host parsed from ``source`` of the form
+    # ``host.tld/owner/repo``. ``None`` means use the default host
+    # (``GITHUB_HOST`` env or ``github.com``).
+    host: str | None = None
 
 
 @dataclass(frozen=True)
@@ -385,6 +405,11 @@ def _parse_package_entry(raw: Any, index: int) -> PackageEntry:
     source = _require_str(raw, "source", context=f"packages[{index}]")
     _validate_source(source, index=index)
     is_local = bool(LOCAL_SOURCE_RE.match(source))
+    # Detect host-prefixed source (e.g. ``host.tld/owner/repo``) and split
+    # the host off so downstream consumers continue to see ``owner/repo``.
+    host: str | None = None
+    if not is_local:
+        host, source = split_host_from_source(source)
 
     # APM-only: subdir (irrelevant for local packages but harmless)
     subdir: str | None = raw.get("subdir")
@@ -527,6 +552,7 @@ def _parse_package_entry(raw: Any, index: int) -> PackageEntry:
         license=license_val,
         repository=repository,
         is_local=is_local,
+        host=host,
     )
 
 
