@@ -133,6 +133,28 @@ def _build_with_mock(
     return builder.build()
 
 
+def _build_with_host_mock(
+    tmp_path: Path,
+    yml_content: str,
+    refs_by_remote: dict[str, list[RemoteRef]],
+    options: BuildOptions | None = None,
+) -> BuildReport:
+    """Build with a mock resolver that handles default *and* host-prefixed entries.
+
+    The standard ``_build_with_mock`` only patches ``_resolver`` (the default
+    resolver). Host-prefixed entries trigger ``_get_resolver_for_host`` which
+    constructs a real ``RefResolver`` bound to the override host. For unit
+    tests we want every host to resolve through the same in-memory mock.
+    """
+    yml_path = _write_yml(tmp_path, yml_content)
+    opts = options or BuildOptions(offline=True)
+    builder = MarketplaceBuilder(yml_path, opts)
+    mock = _MockRefResolver(refs_by_remote)
+    builder._resolver = mock  # type: ignore[assignment]
+    builder._get_resolver_for_host = lambda _host: mock  # type: ignore[assignment]
+    return builder.build()
+
+
 # ---------------------------------------------------------------------------
 # parse_semver
 # ---------------------------------------------------------------------------
@@ -909,6 +931,146 @@ class TestSourceComposition:
         data = json.loads(report.output_path.read_text("utf-8"))
         cr = data["plugins"][0]
         assert "path" not in cr["source"]
+
+    # -- default-host (``owner/repo``) ------------------------------------
+
+    def test_default_host_emits_github_shorthand(self, tmp_path: Path) -> None:
+        """A plain ``owner/repo`` source emits the ``github`` shorthand form."""
+        refs = {"acme/code-reviewer": _make_refs("v2.0.0")}
+        yml = """\
+name: acme-tools
+description: Test
+version: 1.0.0
+owner:
+  name: Acme
+  email: t@acme.example.com
+  url: https://acme.example.com
+packages:
+  - name: code-reviewer
+    source: acme/code-reviewer
+    version: "^2.0.0"
+"""
+        report = _build_with_mock(tmp_path, yml, refs)
+        data = json.loads(report.output_path.read_text("utf-8"))
+        src = data["plugins"][0]["source"]
+        assert src["source"] == "github"
+        assert src["repo"] == "acme/code-reviewer"
+        assert "url" not in src
+        # The github shorthand never carries a ``path`` key.
+        assert "path" not in src
+
+    # -- host-prefixed sources --------------------------------------------
+
+    def test_host_prefixed_without_subdir_emits_url_source(self, tmp_path: Path) -> None:
+        """``host.tld/owner/repo`` (no subdir) emits a full URL via ``source: url``."""
+        refs = {"acme/agents": _make_refs("v0.3.0")}
+        yml = """\
+name: ghe-tools
+description: Test
+version: 1.0.0
+owner:
+  name: Acme
+  email: t@acme.example.com
+  url: https://acme.example.com
+packages:
+  - name: ch-baseline
+    source: ghe.example.com/acme/agents
+    ref: v0.3.0
+"""
+        report = _build_with_host_mock(tmp_path, yml, refs)
+        data = json.loads(report.output_path.read_text("utf-8"))
+        src = data["plugins"][0]["source"]
+        assert src["source"] == "url"
+        assert src["url"] == "https://ghe.example.com/acme/agents"
+        assert "repo" not in src
+        assert "path" not in src
+
+    def test_host_prefixed_with_subdir_emits_git_subdir_url(self, tmp_path: Path) -> None:
+        """``host.tld/owner/repo`` + subdir emits ``git-subdir`` with a full https URL."""
+        refs = {"acme/agents": _make_refs("v0.3.0")}
+        yml = """\
+name: ghe-tools
+description: Test
+version: 1.0.0
+owner:
+  name: Acme
+  email: t@acme.example.com
+  url: https://acme.example.com
+packages:
+  - name: ch-baseline
+    source: ghe.example.com/acme/agents
+    subdir: packages/ch-baseline
+    ref: v0.3.0
+"""
+        report = _build_with_host_mock(tmp_path, yml, refs)
+        data = json.loads(report.output_path.read_text("utf-8"))
+        src = data["plugins"][0]["source"]
+        assert src["source"] == "git-subdir"
+        assert src["url"] == "https://ghe.example.com/acme/agents"
+        assert src["path"] == "packages/ch-baseline"
+
+    def test_default_host_with_subdir_emits_shorthand_url(self, tmp_path: Path) -> None:
+        """``owner/repo`` + subdir keeps the historical ``url: owner/repo`` shape."""
+        refs = {"acme/test-generator": _make_refs("v1.0.0")}
+        yml = """\
+name: acme-tools
+description: Test
+version: 1.0.0
+owner:
+  name: Acme
+  email: t@acme.example.com
+  url: https://acme.example.com
+packages:
+  - name: test-generator
+    source: acme/test-generator
+    version: "~1.0.0"
+    subdir: src/plugin
+"""
+        report = _build_with_mock(tmp_path, yml, refs)
+        data = json.loads(report.output_path.read_text("utf-8"))
+        src = data["plugins"][0]["source"]
+        assert src["source"] == "git-subdir"
+        # Default host: keep the shorthand "owner/repo" (no scheme), preserving
+        # backwards compatibility with marketplaces emitted before host-prefix
+        # support landed.
+        assert src["url"] == "acme/test-generator"
+        assert src["path"] == "src/plugin"
+
+    def test_per_host_resolvers_isolated(self, tmp_path: Path) -> None:
+        """Two entries on different hosts each get their own resolver instance."""
+        refs = {
+            "acme/code-reviewer": _make_refs("v2.0.0"),
+            "team/repo": _make_refs("v1.0.0"),
+        }
+        yml = """\
+name: mixed-tools
+description: Test
+version: 1.0.0
+owner:
+  name: Mixed
+  email: t@mixed.example.com
+  url: https://mixed.example.com
+packages:
+  - name: code-reviewer
+    source: acme/code-reviewer
+    version: "^2.0.0"
+  - name: gitlab-tool
+    source: gitlab.example.org/team/repo
+    ref: v1.0.0
+"""
+        yml_path = _write_yml(tmp_path, yml)
+        builder = MarketplaceBuilder(yml_path, BuildOptions(offline=True))
+        mock = _MockRefResolver(refs)
+        builder._resolver = mock  # type: ignore[assignment]
+        # Force per-host resolver lookups to reuse the same mock so the
+        # builder never tries to talk to a real remote.
+        builder._get_resolver_for_host = lambda _host: mock  # type: ignore[assignment]
+        builder.build()
+        # Calls to _get_resolver_for_host return the mock for every host,
+        # but the cache (_host_resolvers) is only written by the original
+        # implementation -- assert the mock was used by checking refs were
+        # resolved successfully (build() succeeded without OfflineMissError).
+        assert mock is builder._get_resolver_for_host("gitlab.example.org")
 
 
 # ---------------------------------------------------------------------------

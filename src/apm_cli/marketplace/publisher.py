@@ -53,7 +53,8 @@ from .ref_resolver import RefResolver
 from .resolver import parse_marketplace_ref
 from .semver import parse_semver
 from .tag_pattern import render_tag
-from .yml_schema import load_marketplace_yml
+from .migration import load_marketplace_config
+from .yml_schema import load_marketplace_yml  # noqa: F401 — kept for back-compat
 
 logger = logging.getLogger(__name__)
 
@@ -314,10 +315,9 @@ class MarketplacePublisher:
         self._yml = None
 
     def _load_yml(self):
-        """Lazy-load marketplace.yml."""
+        """Lazy-load marketplace config (apm.yml or legacy marketplace.yml)."""
         if self._yml is None:
-            yml_path = self._root / "marketplace.yml"
-            self._yml = load_marketplace_yml(yml_path)
+            self._yml = load_marketplace_config(self._root)
         return self._yml
 
     # -- plan ---------------------------------------------------------------
