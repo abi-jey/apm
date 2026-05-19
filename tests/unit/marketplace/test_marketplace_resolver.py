@@ -473,8 +473,8 @@ class TestOldFormatIntegration:
         result = resolve_plugin_source(plugin, "org", "marketplace", plugin_root="")
         assert result == "acme/monorepo/tools/helper#v2.0"
 
-    def test_old_format_url_with_scheme_rejected(self) -> None:
-        """A full URL in the url field is rejected by the scheme guard."""
+    def test_old_format_url_with_scheme_rejected_when_invalid(self) -> None:
+        """A full URL with an invalid repo path is still rejected."""
         plugin = MarketplacePlugin(
             name="bad-url",
             source={
@@ -484,8 +484,36 @@ class TestOldFormatIntegration:
                 "ref": "main",
             },
         )
-        with pytest.raises(ValueError, match=r"expected 'owner/repo' but got a URL"):
+        with pytest.raises(ValueError, match=r"Invalid git-subdir source"):
             resolve_plugin_source(plugin, "org", "marketplace", plugin_root="")
+
+    def test_git_subdir_url_with_valid_https_host(self) -> None:
+        """A full HTTPS URL with valid owner/repo is decomposed correctly."""
+        plugin = MarketplacePlugin(
+            name="ghe-plugin",
+            source={
+                "type": "git-subdir",
+                "url": "https://ghe.corp.example.com/platform/agents",
+                "path": "packages/my-plugin",
+                "ref": "v1.0.0",
+            },
+        )
+        result = resolve_plugin_source(plugin, "org", "marketplace", plugin_root="")
+        assert result == "ghe.corp.example.com/platform/agents/packages/my-plugin#v1.0.0"
+
+    def test_git_subdir_url_github_com_no_host_prefix(self) -> None:
+        """A github.com HTTPS URL does not add a host prefix."""
+        plugin = MarketplacePlugin(
+            name="gh-plugin",
+            source={
+                "type": "git-subdir",
+                "url": "https://github.com/owner/repo",
+                "path": "sub",
+                "ref": "main",
+            },
+        )
+        result = resolve_plugin_source(plugin, "org", "marketplace", plugin_root="")
+        assert result == "owner/repo/sub#main"
 
 
 class TestResolveMarketplacePluginGitLabMonorepo:
