@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `marketplace.packages[].source` in `apm.yml` now accepts non-default git hosts via the `host.tld/owner/repo` shorthand or the full `https://host.tld/owner/repo[.git]` URL; per-host auth flows through the standard APM token chain. Unlocks GitHub Enterprise and self-hosted GitLab as first-class marketplace package sources. (#1288)
+
 ## [0.14.0] - 2026-05-18
 
 ### Breaking
