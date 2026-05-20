@@ -461,14 +461,37 @@ def _resolve_url_source(source: dict) -> str:
 
 
 def _resolve_git_subdir_source(source: dict) -> str:
-    """Resolve a ``git-subdir`` source type to ``owner/repo[/subdir][#ref]``."""
+    """Resolve a ``git-subdir`` source type to ``[host/]owner/repo[/subdir][#ref]``.
+
+    Accepts both bare ``owner/repo`` strings and full ``https://`` URLs in the
+    ``repo`` / ``url`` field.  Full URLs are decomposed via
+    ``DependencyReference.parse`` so the host is preserved in the canonical,
+    enabling downstream auth routing to enterprise hosts (GHE, GHES) without
+    requiring ``GITHUB_HOST`` to be set globally.
+
+    Marketplace publishers targeting non-default hosts emit full URLs so that
+    native consumers (e.g. Claude Code) can clone directly.  APM decomposes
+    these back into host-qualified canonicals that the install pipeline already
+    understands.
+    """
     repo = source.get("repo", "") or source.get("url", "")
-    # Reject full URLs -- the url fallback accepts owner/repo strings only
+    host: str | None = None
+
+    # Parse full URLs to extract host + owner/repo.
     if "://" in repo:
-        raise ValueError(
-            f"Invalid git-subdir source: expected 'owner/repo' but got a URL '{repo}'. "
-            f"Use source type 'url' for full URL references."
-        )
+        try:
+            dep = DependencyReference.parse(repo)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid git-subdir source: cannot parse URL '{repo}': {exc}"
+            ) from exc
+        if dep.is_local:
+            raise ValueError(
+                f"git-subdir source '{repo}' resolves to a local path, not a Git coordinate."
+            )
+        host = dep.host
+        repo = dep.repo_url
+
     ref = source.get("ref", "")
     subdir = (source.get("subdir", "") or source.get("path", "")).strip("/")
     if not repo or "/" not in repo:
@@ -483,6 +506,14 @@ def _resolve_git_subdir_source(source: dict) -> str:
         base = f"{repo}/{subdir}"
     else:
         base = repo
+
+    # Prefix with host so downstream auth routes to the correct
+    # enterprise host instead of defaulting to github.com.
+    # Skip prefixing for github.com -- it is the default host and
+    # bare owner/repo canonicals already resolve there.
+    if host and host.lower() != "github.com":
+        base = f"{host}/{base}"
+
     if ref:
         return f"{base}#{ref}"
     return base
