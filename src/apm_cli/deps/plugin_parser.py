@@ -554,7 +554,9 @@ def _map_plugin_artifacts(
         else:
             target_hooks = apm_dir / "hooks"
             target_hooks.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, target_hooks / "hooks.json")
+            dst = target_hooks / "hooks.json"
+            if not _is_same_path(src_file, dst):
+                shutil.copy2(src_file, dst)
     else:
         # Directory path(s)  -- standard flow
         hook_sources = _resolve_sources("hooks", "hooks")
@@ -569,7 +571,9 @@ def _map_plugin_artifacts(
     for passthrough in (".mcp.json", ".lsp.json", "settings.json"):
         source_file = plugin_path / passthrough
         if source_file.exists() and not source_file.is_symlink():
-            shutil.copy2(source_file, apm_dir / passthrough)
+            dst = apm_dir / passthrough
+            if not _is_same_path(source_file, dst):
+                shutil.copy2(source_file, dst)
 
 
 def _generate_apm_yml(manifest: dict[str, Any]) -> str:

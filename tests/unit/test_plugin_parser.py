@@ -1050,6 +1050,24 @@ class TestMapPluginArtifactsPrePositioned:
             ".apm/hooks/ content destroyed by _map_plugin_artifacts"
         )
 
+    def test_hooks_config_file_inside_apm_is_preserved(self, tmp_path):
+        """Manifest `hooks: ".apm/hooks/hooks.json"` (config-file form)
+        must not raise SameFileError when src and dst are the same path."""
+        plugin_dir = tmp_path / "pkg"
+        plugin_dir.mkdir()
+
+        apm_dir = plugin_dir / ".apm"
+        hooks_dir = apm_dir / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "hooks.json").write_text('{"on": "pre-commit"}')
+
+        manifest = {"name": "test", "hooks": ".apm/hooks/hooks.json"}
+        # Must not raise SameFileError
+        _map_plugin_artifacts(plugin_dir, apm_dir, manifest=manifest)
+
+        assert (hooks_dir / "hooks.json").exists()
+        assert (hooks_dir / "hooks.json").read_text() == '{"on": "pre-commit"}'
+
     def test_external_agents_still_copied(self, tmp_path):
         """Non-.apm/ agents must still be copied into .apm/ (no regression)."""
         plugin_dir = tmp_path / "pkg"
