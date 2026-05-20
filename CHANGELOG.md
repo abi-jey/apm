@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `marketplace.packages[].source` in `apm.yml` now accepts non-default git hosts via the `host.tld/owner/repo` shorthand or the full `https://host.tld/owner/repo[.git]` URL; per-host auth flows through the standard APM token chain. Unlocks GitHub Enterprise and self-hosted GitLab as first-class marketplace package sources. (#1288)
 
+## [0.14.1] - 2026-05-20
+
+### Added
+
+- **Experimental:** `copilot-app` target deploys prompts (with optional workflow frontmatter) directly into the GitHub Copilot desktop App's `~/.copilot/data.db` workflows table; shape-dispatched `.prompt.md` (workflow keys `interval` / `schedule_hour` / `schedule_day` route to the App, plain prompts route to slash-command targets) so each prompt lands on exactly one surface. Gated behind `apm experimental enable copilot-app`; works in project (`apm install --target copilot-app`) and user (`--global`) scope; workflows install disabled, user opts in from the App. See [Copilot App integration](https://microsoft.github.io/apm/integrations/copilot-app/). (#1405)
+
+### Fixed
+
+- `apm install` honors the SSH user portion of dependency URLs (`ssh://user@host/...` and scp shorthand `user@host:org/repo`) instead of hardcoding `git@`; unblocks EMU accounts and other non-`git` SSH identities. (#1385, closes #1383)
+- Windows installer and `apm self-update` detect Windows Defender / antivirus blocks (HRESULT `0x800700E1`, PUA messages) and surface three actionable recovery options (`Add-MpPreference -ExclusionPath`, `pip --user`, false-positive submission URL) instead of falling through to a generic "failed to run" and a pip fallback that itself dies on unsupported Python. (#1408)
+- Windows installer and `apm self-update` survive AppLocker / App Control for Business (WDAC) policies by staging the release into the allow-listed per-user install root before running the `apm.exe --version` smoke test, and emit AppLocker-specific guidance on `0x80070005` Access Denied instead of silently falling back to pip. (#1390, closes #1389)
+
 ## [0.14.0] - 2026-05-18
 
 ### Breaking
